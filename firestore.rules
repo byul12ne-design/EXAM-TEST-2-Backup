@@ -1,0 +1,113 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userProfilePath(uid) {
+      return /databases/$(database)/documents/users/$(uid);
+    }
+
+    function hasUserProfile() {
+      return signedIn() && exists(userProfilePath(request.auth.uid));
+    }
+
+    function userProfile() {
+      return get(userProfilePath(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      // TODO(security): Replace this placeholder with the approved admin claim policy.
+      // The current app still uses client-side admin state, so deploying this draft
+      // before Custom Claims are configured will block admin reads/writes.
+      return signedIn()
+        && request.auth.token.keys().hasAny(['admin'])
+        && request.auth.token.admin == true;
+    }
+
+    function isOwnerUid(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function isStudentProfileCreate(uid) {
+      return isOwnerUid(uid)
+        && request.resource.data.keys().hasOnly(['uid', 'employeeId', 'name', 'role'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.employeeId is string
+        && request.resource.data.employeeId.matches('^WN[0-9]{8}$')
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.role == 'student';
+    }
+
+    function ownEmployeeId() {
+      return userProfile().employeeId;
+    }
+
+    function isOwnResult() {
+      return hasUserProfile() && resource.data.studentId == ownEmployeeId();
+    }
+
+    function isOwnResultCreate() {
+      return hasUserProfile()
+        && request.resource.data.studentId == ownEmployeeId()
+        && request.resource.data.studentName == userProfile().name
+        && request.resource.data.keys().hasAll([
+          'examId',
+          'examTitle',
+          'studentId',
+          'studentName',
+          'score',
+          'correctCount',
+          'totalCount',
+          'answers',
+          'activeQuestions',
+          'createdAt',
+          'mode'
+        ]);
+    }
+
+    function isOwnProgressDocument(progressId) {
+      return signedIn() && progressId.matches('^' + request.auth.uid + '_.*$');
+    }
+
+    match /users/{uid} {
+      allow get: if isOwnerUid(uid) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if isStudentProfileCreate(uid);
+      allow update, delete: if isAdmin();
+    }
+
+    match /exams/{examId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.isVisible == true);
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /results/{resultId} {
+      allow get, list: if isAdmin() || isOwnResult();
+      allow create: if isOwnResultCreate();
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    match /questionBank/{questionId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /studyProgress/{progressId} {
+      allow get, create, update, delete: if isOwnProgressDocument(progressId);
+      allow list: if false;
+    }
+
+    match /testProgress/{progressId} {
+      allow get, create, update, delete: if isOwnProgressDocument(progressId);
+      allow list: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
